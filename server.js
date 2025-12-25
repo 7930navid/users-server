@@ -143,17 +143,11 @@ app.put("/editprofile", async (req, res) => {
         return res.status(404).json({ message: "User not found" });
       }
 
-      // 🔹 posts table sync
-      await postsDB.query(
-        `UPDATE posts SET username=$1, avatar=$2 WHERE email=$3`,
-        [username, avatar, email]
-      );
-
       await client.query("COMMIT");
 
       res.json({
         message: "Profile updated successfully",
-        user: userResult.rows[0] // password নাই
+        user: userResult.rows[0] // password null
       });
 
     } catch (err) {
@@ -168,8 +162,6 @@ app.put("/editprofile", async (req, res) => {
     res.status(500).json({ message: "Error updating profile" });
   }
 });
-
-
 // 🔹 Delete User + Posts
 app.delete("/deleteuser/:email", async (req, res) => {
   try {
