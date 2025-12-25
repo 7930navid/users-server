@@ -94,33 +94,56 @@ app.post("/signin", async (req, res) => {
 });
 
 
-// 🔹 Edit Profile
+// 🔹 Edit Profile (password optional)
 app.put("/editprofile", async (req, res) => {
   try {
     const { email, username, password, bio, avatar } = req.body;
 
-    if (!email || !username || !password || !bio || !avatar)
-      return res.status(400).json({ message: "Please fill all fields" });
-
-    const hashedPassword = await bcrypt.hash(password, 10);
+    if (!email || !username || !bio || !avatar) {
+      return res.status(400).json({ message: "Missing required fields" });
+    }
 
     const client = await usersDB.connect();
+
     try {
       await client.query("BEGIN");
 
-      const userResult = await client.query(
-        `UPDATE users
-         SET username=$1, password=$2, bio=$3, avatar=$4
-         WHERE email=$5
-         RETURNING *`,
-        [username, hashedPassword, bio, avatar, email]
-      );
+      let updateQuery;
+      let values;
+
+      // 🔹 password থাকলে
+      if (password && password.trim() !== "") {
+        const hashedPassword = await bcrypt.hash(password, 10);
+
+        updateQuery = `
+          UPDATE users
+          SET username=$1, password=$2, bio=$3, avatar=$4
+          WHERE email=$5
+          RETURNING id, email, username, bio, avatar
+        `;
+
+        values = [username, hashedPassword, bio, avatar, email];
+
+      } else {
+        // 🔹 password ছাড়া update
+        updateQuery = `
+          UPDATE users
+          SET username=$1, bio=$2, avatar=$3
+          WHERE email=$4
+          RETURNING id, email, username, bio, avatar
+        `;
+
+        values = [username, bio, avatar, email];
+      }
+
+      const userResult = await client.query(updateQuery, values);
 
       if (userResult.rowCount === 0) {
         await client.query("ROLLBACK");
         return res.status(404).json({ message: "User not found" });
       }
 
+      // 🔹 posts table sync
       await postsDB.query(
         `UPDATE posts SET username=$1, avatar=$2 WHERE email=$3`,
         [username, avatar, email]
@@ -129,20 +152,22 @@ app.put("/editprofile", async (req, res) => {
       await client.query("COMMIT");
 
       res.json({
-        message: "Profile and posts updated successfully",
-        user: userResult.rows[0]
+        message: "Profile updated successfully",
+        user: userResult.rows[0] // password নাই
       });
+
     } catch (err) {
       await client.query("ROLLBACK");
       throw err;
     } finally {
       client.release();
     }
+
   } catch (err) {
-    res.status(500).json({ message: "Error updating profile", error: err.message });
+    console.error(err);
+    res.status(500).json({ message: "Error updating profile" });
   }
 });
-
 
 
 // 🔹 Delete User + Posts
