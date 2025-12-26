@@ -162,20 +162,38 @@ app.put("/editprofile", async (req, res) => {
     res.status(500).json({ message: "Error updating profile" });
   }
 });
-// 🔹 Delete User + Posts
+
+// 🔹 Delete User (usersDB only)
 app.delete("/deleteuser/:email", async (req, res) => {
   try {
     const { email } = req.params;
-    const result = await usersDB.query("DELETE FROM users WHERE email=$1", [email]);
 
-    if (result.rowCount > 0)
-      res.json({ message: `${email} has been deleted` });
-    else
-      res.status(404).json({ message: "User not found" });
+    if (!email) {
+      return res.status(400).json({ message: "Email is required" });
+    }
+
+    const result = await usersDB.query(
+      "DELETE FROM users WHERE email = $1",
+      [email]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    res.status(200).json({
+      message: `User ${email} deleted successfully`
+    });
+
   } catch (err) {
-    res.status(500).json({ message: "Error deleting user", error: err.message });
+    console.error("Error deleting user:", err.message);
+    res.status(500).json({
+      message: "Error deleting user",
+      error: err.message
+    });
   }
 });
+
 
 // 🔹 Fetch all users
 app.get("/users", async (req, res) => {
