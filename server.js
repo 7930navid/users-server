@@ -237,6 +237,35 @@ app.post("/verify-password", async (req, res) => {
   }
 });
 
+// 🔹 Get public profile (name + bio + avatar)
+app.get("/public-profile", async (req, res) => {
+  try {
+    const { email } = req.query;
+
+    if (!email) {
+      return res.status(400).json({ message: "Email required" });
+    }
+
+    const result = await usersDB.query(
+      `SELECT username, bio, avatar 
+       FROM users 
+       WHERE email = $1`,
+      [email]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    res.json(result.rows[0]); // { username, bio, avatar }
+
+  } catch (err) {
+    console.error("Public profile error:", err.message);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+
 // 🔹 Server check
 app.get("/", (req, res) => res.json({ message: "Backend is working ✅" }));
 
