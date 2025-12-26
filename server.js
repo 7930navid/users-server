@@ -45,6 +45,24 @@ async function initDB() {
   }
 }
 
+// 🔹 Keep-Alive ping for usersDB
+async function keepUsersDBAlive() {
+  try {
+    const res = await usersDB.query("SELECT 1"); // lightweight ping
+    console.log(`[${new Date().toISOString()}] usersDB ping success`, res.rows[0]);
+  } catch (err) {
+    console.error(`[${new Date().toISOString()}] usersDB ping failed:`, err.message);
+  }
+}
+
+// 🔹 Ping interval (6 hours)
+const PING_INTERVAL = 1000 * 60 * 60 * 6; // 6 hours
+setInterval(keepUsersDBAlive, PING_INTERVAL);
+
+// initial ping immediately on server start
+keepUsersDBAlive();
+
+
 // 🔹 Signup
 app.post("/signup", async (req, res) => {
   try {
