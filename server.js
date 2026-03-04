@@ -279,6 +279,57 @@ app.get("/public-profile", async (req, res) => {
   }
 });
 
+
+/* =========================
+   👥 FETCH ALL USERS
+   🔒 Protected (JWT required)
+========================= */
+
+app.get("/users", verifyToken, async (req, res) => {
+  try {
+    const result = await usersDB.query(
+      "SELECT id, username, email, bio, avatar FROM users ORDER BY created_at DESC"
+    );
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Fetch users error:", err.message);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+
+/* =========================
+   🔍 SEARCH USERS
+   🔒 Protected (JWT required)
+========================= */
+
+app.get("/search-users", verifyToken, async (req, res) => {
+  try {
+    const { query } = req.query;
+
+    if (!query || query.trim() === "") {
+      return res.status(400).json({ message: "Search query required" });
+    }
+
+    const searchQuery = `
+      SELECT id, username, email, bio, avatar
+      FROM users
+      WHERE LOWER(username) LIKE LOWER($1) OR LOWER(email) LIKE LOWER($1)
+      ORDER BY username ASC
+    `;
+
+    const values = [`%${query}%`];
+    const result = await usersDB.query(searchQuery, values);
+
+    res.json(result.rows);
+
+  } catch (err) {
+    console.error("Search users error:", err.message);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
 /* =========================
    🟢 Health Check
 ========================= */
