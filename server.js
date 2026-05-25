@@ -6,33 +6,40 @@ const helmet = require("helmet");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const rateLimit = require("express-rate-limit");
+const hpp = require("hpp");
+const morgan = require("morgan");
+const validator = require("validator");
 const { Pool } = require("pg");
 
 const app = express();
 
 /* =========================
-   🔐 Security Middlewares
+   SECURITY
 ========================= */
 
-app.use(helmet());
+app.disable("x-powered-by");
+app.use(helmet({ contentSecurityPolicy: false }));
 
 app.use(cors({
   origin: [
     "https://7930navid.github.io",
     "http://localhost:8080"
   ],
-  methods: ["GET", "POST", "PUT", "DELETE"],
+  credentials: true
 }));
 
+app.use(express.json({ limit: "10kb" }));
+app.use(hpp());
+app.use(morgan("combined"));
 
-app.use(express.json());
+/* =========================
+   RATE LIMIT
+========================= */
 
-const globalLimiter = rateLimit({
+app.use(rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100
-});
-
-app.use(globalLimiter);
+}));
 
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -40,47 +47,56 @@ const loginLimiter = rateLimit({
 });
 
 /* =========================
-   🗄 Database Connection
+   DB CONNECTION
 ========================= */
 
-const usersDB = new Pool({
-  connectionString: process.env.USERS_DB_URL,
-  ssl: { rejectUnauthorized: false } // change if provider requires true
+const db = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === "production"
+    ? { rejectUnauthorized: true }
+    : false
 });
 
 /* =========================
-   🧱 Initialize Table
+   AUTO DB SETUP (NO SQL FILE)
 ========================= */
 
 async function initDB() {
-  await usersDB.query(`
+  await db.query(`
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
     CREATE TABLE IF NOT EXISTS users (
-      id SERIAL PRIMARY KEY,
+      id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
       username TEXT NOT NULL,
       email TEXT UNIQUE NOT NULL,
       password TEXT NOT NULL,
-      bio TEXT NOT NULL,
-      avatar TEXT NOT NULL,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      bio TEXT DEFAULT '',
+      avatar TEXT DEFAULT 'https://i.ibb.co/default-avatar.png',
+      cover_photo TEXT DEFAULT 'https://i.ibb.co/default-cover.jpg',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
   `);
 
-  console.log("✅ Users table ready");
+  console.log("✅ Database ready (auto setup done)");
 }
 
 /* =========================
-   🔑 JWT Middleware
+   JWT VERIFY
 ========================= */
 
-function verifyToken(req, res, next) {
-  const authHeader = req.headers.authorization;
-  if (!authHeader)
-    return res.status(401).json({ message: "Unauthorized" });
+function auth(req, res, next) {
+  const header = req.headers.authorization;
+  if (!header) return res.status(401).json({ message: "Unauthorized" });
 
-  const token = authHeader.split(" ")[1];
+  const token = header.split(" ")[1];
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET, {
+      issuer: "AsirNet",
+      audience: "AsirNetUsers"
+    });
+
     req.user = decoded;
     next();
   } catch {
@@ -89,50 +105,62 @@ function verifyToken(req, res, next) {
 }
 
 /* =========================
-   📝 SIGNUP
+   SIGNUP
 ========================= */
 
 app.post("/signup", async (req, res) => {
   try {
-    const { username, email, password, bio, avatar } = req.body;
+    const { username, email, password, bio, avatar, cover_photo } = req.body;
 
-    if (!username || !email || !password || !bio || !avatar)
-      return res.status(400).json({ message: "All fields required" });
+    if (!username || !email || !password)
+      return res.status(400).json({ message: "Missing fields" });
 
-    const exists = await usersDB.query(
+    if (!validator.isEmail(email))
+      return res.status(400).json({ message: "Invalid email" });
+
+    if (password.length < 8)
+      return res.status(400).json({ message: "Weak password" });
+
+    const exists = await db.query(
       "SELECT id FROM users WHERE email=$1",
       [email]
     );
 
     if (exists.rows.length > 0)
-      return res.status(400).json({ message: "User already exists" });
+      return res.status(400).json({ message: "User exists" });
 
-    const hashedPassword = await bcrypt.hash(password, 12);
+    const hash = await bcrypt.hash(password, 12);
 
-    await usersDB.query(
-      "INSERT INTO users (username, email, password, bio, avatar) VALUES ($1,$2,$3,$4,$5)",
-      [username, email, hashedPassword, bio, avatar]
+    await db.query(
+      `INSERT INTO users
+      (username,email,password,bio,avatar,cover_photo)
+      VALUES ($1,$2,$3,$4,$5,$6)`,
+      [
+        username,
+        email,
+        hash,
+        bio || "",
+        avatar || "",
+        cover_photo || ""
+      ]
     );
 
-    res.status(201).json({ message: "Registered successfully" });
+    res.status(201).json({ message: "User created" });
 
-  } catch {
+  } catch (err) {
     res.status(500).json({ message: "Server error" });
   }
 });
 
 /* =========================
-   🔐 SIGNIN
+   SIGNIN
 ========================= */
 
 app.post("/signin", loginLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    if (!email || !password)
-      return res.status(400).json({ message: "All fields required" });
-
-    const result = await usersDB.query(
+    const result = await db.query(
       "SELECT * FROM users WHERE email=$1",
       [email]
     );
@@ -142,48 +170,22 @@ app.post("/signin", loginLimiter, async (req, res) => {
 
     const user = result.rows[0];
 
-    const valid = await bcrypt.compare(password, user.password);
-    if (!valid)
+    const match = await bcrypt.compare(password, user.password);
+
+    if (!match)
       return res.status(401).json({ message: "Invalid credentials" });
 
     const token = jwt.sign(
       { id: user.id, email: user.email },
       process.env.JWT_SECRET,
-      { expiresIn: "7d" }
-    );
-
-    res.json({
-      message: "Login successful",
-      token,
-      user: {
-        id: user.id,
-        username: user.username,
-        email: user.email,
-        bio: user.bio,
-        avatar: user.avatar
+      {
+        expiresIn: "7d",
+        issuer: "AsirNet",
+        audience: "AsirNetUsers"
       }
-    });
-
-  } catch {
-    res.status(500).json({ message: "Server error" });
-  }
-});
-
-/* =========================
-   👤 GET OWN PROFILE
-========================= */
-
-app.get("/me", verifyToken, async (req, res) => {
-  try {
-    const result = await usersDB.query(
-      "SELECT id, username, email, bio, avatar FROM users WHERE id=$1",
-      [req.user.id]
     );
 
-    if (result.rows.length === 0)
-      return res.status(404).json({ message: "User not found" });
-
-    res.json(result.rows[0]);
+    res.json({ token, user });
 
   } catch {
     res.status(500).json({ message: "Server error" });
@@ -191,161 +193,73 @@ app.get("/me", verifyToken, async (req, res) => {
 });
 
 /* =========================
-   ✏️ EDIT PROFILE
+   PROFILE
 ========================= */
 
-app.put("/editprofile", verifyToken, async (req, res) => {
-  try {
-    const { username, password, bio, avatar } = req.body;
+app.get("/me", auth, async (req, res) => {
+  const result = await db.query(
+    "SELECT id,username,email,bio,avatar,cover_photo FROM users WHERE id=$1",
+    [req.user.id]
+  );
 
-    if (!username || !bio || !avatar)
-      return res.status(400).json({ message: "Missing fields" });
-
-    let query;
-    let values;
-
-    if (password && password.trim() !== "") {
-      const hashed = await bcrypt.hash(password, 12);
-      query = `
-        UPDATE users
-        SET username=$1, password=$2, bio=$3, avatar=$4
-        WHERE id=$5
-        RETURNING id, username, email, bio, avatar
-      `;
-      values = [username, hashed, bio, avatar, req.user.id];
-    } else {
-      query = `
-        UPDATE users
-        SET username=$1, bio=$2, avatar=$3
-        WHERE id=$4
-        RETURNING id, username, email, bio, avatar
-      `;
-      values = [username, bio, avatar, req.user.id];
-    }
-
-    const result = await usersDB.query(query, values);
-
-    res.json({
-      message: "Profile updated",
-      user: result.rows[0]
-    });
-
-  } catch {
-    res.status(500).json({ message: "Server error" });
-  }
+  res.json(result.rows[0]);
 });
 
 /* =========================
-   ❌ DELETE ACCOUNT
+   UPDATE PROFILE
 ========================= */
 
-app.delete("/deleteuser", verifyToken, async (req, res) => {
-  try {
-    await usersDB.query(
-      "DELETE FROM users WHERE id=$1",
-      [req.user.id]
-    );
+app.put("/profile", auth, async (req, res) => {
+  const { username, bio, avatar, cover_photo } = req.body;
 
-    res.json({ message: "Account deleted" });
+  const result = await db.query(
+    `UPDATE users
+     SET username=$1,bio=$2,avatar=$3,cover_photo=$4
+     WHERE id=$5
+     RETURNING id,username,email,bio,avatar,cover_photo`,
+    [username, bio, avatar, cover_photo, req.user.id]
+  );
 
-  } catch {
-    res.status(500).json({ message: "Server error" });
-  }
+  res.json(result.rows[0]);
 });
 
 /* =========================
-   🌍 PUBLIC PROFILE
+   USERS
 ========================= */
 
-app.get("/public-profile", async (req, res) => {
-  try {
-    const { email } = req.query;
+app.get("/users", auth, async (req, res) => {
+  const result = await db.query(
+    "SELECT id,username,email,bio,avatar FROM users"
+  );
 
-    if (!email)
-      return res.status(400).json({ message: "Email required" });
-
-    const result = await usersDB.query(
-      "SELECT username, bio, avatar FROM users WHERE email=$1",
-      [email]
-    );
-
-    if (result.rows.length === 0)
-      return res.status(404).json({ message: "User not found" });
-
-    res.json(result.rows[0]);
-
-  } catch {
-    res.status(500).json({ message: "Server error" });
-  }
-});
-
-
-/* =========================
-   👥 FETCH ALL USERS
-   🔒 Protected (JWT required)
-========================= */
-
-app.get("/users", verifyToken, async (req, res) => {
-  try {
-    const result = await usersDB.query(
-      "SELECT id, username, email, bio, avatar FROM users ORDER BY created_at DESC"
-    );
-
-    res.json(result.rows);
-  } catch (err) {
-    console.error("Fetch users error:", err.message);
-    res.status(500).json({ message: "Server error" });
-  }
-});
-
-
-/* =========================
-   🔍 SEARCH USERS
-   🔒 Protected (JWT required)
-========================= */
-
-app.get("/search-users", verifyToken, async (req, res) => {
-  try {
-    const { query } = req.query;
-
-    if (!query || query.trim() === "") {
-      return res.status(400).json({ message: "Search query required" });
-    }
-
-    const searchQuery = `
-      SELECT id, username, email, bio, avatar
-      FROM users
-      WHERE LOWER(username) LIKE LOWER($1) OR LOWER(email) LIKE LOWER($1)
-      ORDER BY username ASC
-    `;
-
-    const values = [`%${query}%`];
-    const result = await usersDB.query(searchQuery, values);
-
-    res.json(result.rows);
-
-  } catch (err) {
-    console.error("Search users error:", err.message);
-    res.status(500).json({ message: "Server error" });
-  }
+  res.json(result.rows);
 });
 
 /* =========================
-   🟢 Health Check
+   SEARCH
 ========================= */
 
-app.get("/", (req, res) =>
-  res.json({ status: "Backend is running ✅" })
-);
+app.get("/search", auth, async (req, res) => {
+  const { q } = req.query;
+
+  const result = await db.query(
+    `SELECT id,username,email,bio,avatar
+     FROM users
+     WHERE username ILIKE $1 OR email ILIKE $1`,
+    [`%${q}%`]
+  );
+
+  res.json(result.rows);
+});
 
 /* =========================
-   🚀 Start Server
+   START
 ========================= */
 
 const PORT = process.env.PORT || 5000;
 
 initDB().then(() => {
   app.listen(PORT, () =>
-    console.log(`🚀 Server running on port ${PORT}`)
+    console.log("🚀 AsirNet running on", PORT)
   );
 });
