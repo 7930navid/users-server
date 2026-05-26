@@ -14,17 +14,22 @@ const { Pool } = require("pg");
 const app = express();
 
 /* =========================
-   SECURITY
+   BASIC SECURITY
 ========================= */
 
 app.disable("x-powered-by");
-app.use(helmet({ contentSecurityPolicy: false }));
+
+app.use(helmet({
+  contentSecurityPolicy: false
+}));
 
 app.use(cors({
   origin: [
     "https://7930navid.github.io",
     "http://localhost:8080"
   ],
+  methods: ["GET", "POST", "PUT", "DELETE"],
+  allowedHeaders: ["Content-Type", "Authorization"],
   credentials: true
 }));
 
@@ -33,17 +38,18 @@ app.use(hpp());
 app.use(morgan("combined"));
 
 /* =========================
-   RATE LIMIT
+   RATE LIMIT (GLOBAL)
 ========================= */
 
 app.use(rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 100
+  max: 200
 }));
 
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 5
+  max: 5,
+  message: { message: "Too many login attempts" }
 });
 
 /* =========================
@@ -53,45 +59,47 @@ const loginLimiter = rateLimit({
 const db = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.NODE_ENV === "production"
-    ? { rejectUnauthorized: true }
+    ? { rejectUnauthorized: false }
     : false
 });
 
 /* =========================
-   AUTO DB SETUP (NO SQL FILE)
+   INIT DB
 ========================= */
 
 async function initDB() {
   await db.query(`
-    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-
     CREATE TABLE IF NOT EXISTS users (
-      id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       username TEXT NOT NULL,
       email TEXT UNIQUE NOT NULL,
       password TEXT NOT NULL,
       bio TEXT DEFAULT '',
-      avatar TEXT DEFAULT 'https://i.ibb.co/default-avatar.png',
-      cover_photo TEXT DEFAULT 'https://i.ibb.co/default-cover.jpg',
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      avatar TEXT,
+      cover_photo TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
   `);
 
-  console.log("✅ Database ready (auto setup done)");
+  console.log("✅ Database ready");
 }
 
 /* =========================
-   JWT VERIFY
+   AUTH MIDDLEWARE
 ========================= */
 
 function auth(req, res, next) {
-  const header = req.headers.authorization;
-  if (!header) return res.status(401).json({ message: "Unauthorized" });
-
-  const token = header.split(" ")[1];
-
   try {
+    const header = req.headers.authorization;
+
+    if (!header || !header.startsWith("Bearer ")) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    const token = header.split(" ")[1];
+
     const decoded = jwt.verify(token, process.env.JWT_SECRET, {
       issuer: "AsirNet",
       audience: "AsirNetUsers"
@@ -99,7 +107,8 @@ function auth(req, res, next) {
 
     req.user = decoded;
     next();
-  } catch {
+
+  } catch (err) {
     return res.status(403).json({ message: "Invalid token" });
   }
 }
@@ -140,14 +149,15 @@ app.post("/signup", async (req, res) => {
         email,
         hash,
         bio || "",
-        avatar || "",
-        cover_photo || ""
+        avatar || null,
+        cover_photo || null
       ]
     );
 
     res.status(201).json({ message: "User created" });
 
   } catch (err) {
+    console.error(err);
     res.status(500).json({ message: "Server error" });
   }
 });
@@ -159,6 +169,9 @@ app.post("/signup", async (req, res) => {
 app.post("/signin", loginLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
+
+    if (!email || !password)
+      return res.status(400).json({ message: "Missing fields" });
 
     const result = await db.query(
       "SELECT * FROM users WHERE email=$1",
@@ -185,9 +198,15 @@ app.post("/signin", loginLimiter, async (req, res) => {
       }
     );
 
-    res.json({ token, user });
+    const { password, ...safeUser } = user;
 
-  } catch {
+    res.json({
+      token,
+      user: safeUser
+    });
+
+  } catch (err) {
+    console.error(err);
     res.status(500).json({ message: "Server error" });
   }
 });
@@ -197,12 +216,16 @@ app.post("/signin", loginLimiter, async (req, res) => {
 ========================= */
 
 app.get("/me", auth, async (req, res) => {
-  const result = await db.query(
-    "SELECT id,username,email,bio,avatar,cover_photo FROM users WHERE id=$1",
-    [req.user.id]
-  );
+  try {
+    const result = await db.query(
+      "SELECT id,username,email,bio,avatar,cover_photo FROM users WHERE id=$1",
+      [req.user.id]
+    );
 
-  res.json(result.rows[0]);
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
 });
 
 /* =========================
@@ -210,17 +233,22 @@ app.get("/me", auth, async (req, res) => {
 ========================= */
 
 app.put("/profile", auth, async (req, res) => {
-  const { username, bio, avatar, cover_photo } = req.body;
+  try {
+    const { username, bio, avatar, cover_photo } = req.body;
 
-  const result = await db.query(
-    `UPDATE users
-     SET username=$1,bio=$2,avatar=$3,cover_photo=$4
-     WHERE id=$5
-     RETURNING id,username,email,bio,avatar,cover_photo`,
-    [username, bio, avatar, cover_photo, req.user.id]
-  );
+    const result = await db.query(
+      `UPDATE users
+       SET username=$1,bio=$2,avatar=$3,cover_photo=$4
+       WHERE id=$5
+       RETURNING id,username,email,bio,avatar,cover_photo`,
+      [username, bio, avatar, cover_photo, req.user.id]
+    );
 
-  res.json(result.rows[0]);
+    res.json(result.rows[0]);
+
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
 });
 
 /* =========================
@@ -228,11 +256,16 @@ app.put("/profile", auth, async (req, res) => {
 ========================= */
 
 app.get("/users", auth, async (req, res) => {
-  const result = await db.query(
-    "SELECT id,username,email,bio,avatar FROM users"
-  );
+  try {
+    const result = await db.query(
+      "SELECT id,username,email,bio,avatar,cover_photo FROM users"
+    );
 
-  res.json(result.rows);
+    res.json(result.rows);
+
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
 });
 
 /* =========================
@@ -240,26 +273,31 @@ app.get("/users", auth, async (req, res) => {
 ========================= */
 
 app.get("/search", auth, async (req, res) => {
-  const { q } = req.query;
+  try {
+    const { q } = req.query;
 
-  const result = await db.query(
-    `SELECT id,username,email,bio,avatar
-     FROM users
-     WHERE username ILIKE $1 OR email ILIKE $1`,
-    [`%${q}%`]
-  );
+    const result = await db.query(
+      `SELECT id,username,email,bio,avatar
+       FROM users
+       WHERE username ILIKE $1 OR email ILIKE $1`,
+      [`%${q || ""}%`]
+    );
 
-  res.json(result.rows);
+    res.json(result.rows);
+
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
 });
 
 /* =========================
-   START
+   START SERVER
 ========================= */
 
 const PORT = process.env.PORT || 5000;
 
 initDB().then(() => {
-  app.listen(PORT, () =>
-    console.log("🚀 AsirNet running on", PORT)
-  );
+  app.listen(PORT, () => {
+    console.log("🚀 AsirNet running on", PORT);
+  });
 });
