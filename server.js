@@ -198,7 +198,7 @@ app.post("/signin", loginLimiter, async (req, res) => {
       }
     );
 
-    const { password, ...safeUser } = user;
+    const { password_, ...safeUser } = user;
 
     res.json({
       token,
