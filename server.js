@@ -21,9 +21,7 @@ const app = express();
 
 app.disable("x-powered-by");
 
-app.use(helmet({
-  contentSecurityPolicy: false
-}));
+app.use(helmet({ contentSecurityPolicy: false }));
 
 app.use(cors({
   origin: [
@@ -40,7 +38,7 @@ app.use(hpp());
 app.use(morgan("combined"));
 
 /* =========================
-   RATE LIMIT (GLOBAL)
+   RATE LIMIT
 ========================= */
 
 app.use(rateLimit({
@@ -55,7 +53,7 @@ const loginLimiter = rateLimit({
 });
 
 /* =========================
-   DB CONNECTION
+   DB
 ========================= */
 
 const db = new Pool({
@@ -63,6 +61,18 @@ const db = new Pool({
   ssl: process.env.NODE_ENV === "production"
     ? { rejectUnauthorized: false }
     : false
+});
+
+/* =========================
+   EMAIL TRANSPORT (OPTIMIZED)
+========================= */
+
+const transporter = nodemailer.createTransport({
+  service: "gmail",
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS
+  }
 });
 
 /* =========================
@@ -79,13 +89,15 @@ async function initDB() {
       bio TEXT DEFAULT '',
       avatar TEXT,
       cover_photo TEXT,
+      reset_token TEXT,
+      reset_expiry TIMESTAMP,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
 
     CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
   `);
 
-  console.log("✅ Database ready");
+  console.log("✅ Database Ready");
 }
 
 /* =========================
@@ -110,7 +122,7 @@ function auth(req, res, next) {
     req.user = decoded;
     next();
 
-  } catch (err) {
+  } catch {
     return res.status(403).json({ message: "Invalid token" });
   }
 }
@@ -143,9 +155,8 @@ app.post("/signup", async (req, res) => {
     const hash = await bcrypt.hash(password, 12);
 
     await db.query(
-      `INSERT INTO users
-      (username,email,password,bio,avatar,cover_photo)
-      VALUES ($1,$2,$3,$4,$5,$6)`,
+      `INSERT INTO users (username,email,password,bio,avatar,cover_photo)
+       VALUES ($1,$2,$3,$4,$5,$6)`,
       [
         username,
         email,
@@ -165,7 +176,7 @@ app.post("/signup", async (req, res) => {
 });
 
 /* =========================
-   SIGNIN
+   SIGNIN (FIXED)
 ========================= */
 
 app.post("/signin", loginLimiter, async (req, res) => {
@@ -180,12 +191,17 @@ app.post("/signin", loginLimiter, async (req, res) => {
       [email]
     );
 
-    if (result.rows.length === 0)
+    if (!result.rows.length)
       return res.status(401).json({ message: "Invalid credentials" });
 
     const user = result.rows[0];
 
-    const match = await bcrypt.compare(password, user.password);
+    const match = await Promise.race([
+      bcrypt.compare(password, user.password),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("bcrypt timeout")), 5000)
+      )
+    ]);
 
     if (!match)
       return res.status(401).json({ message: "Invalid credentials" });
@@ -200,15 +216,12 @@ app.post("/signin", loginLimiter, async (req, res) => {
       }
     );
 
-    const { password_, ...safeUser } = user;
+    const { password, reset_token, reset_expiry, ...safeUser } = user;
 
-    res.json({
-      token,
-      user: safeUser
-    });
+    return res.json({ token, user: safeUser });
 
   } catch (err) {
-    console.error(err);
+    console.error("SIGNIN ERROR:", err);
     res.status(500).json({ message: "Server error" });
   }
 });
@@ -225,7 +238,7 @@ app.get("/me", auth, async (req, res) => {
     );
 
     res.json(result.rows[0]);
-  } catch (err) {
+  } catch {
     res.status(500).json({ message: "Server error" });
   }
 });
@@ -247,8 +260,7 @@ app.put("/profile", auth, async (req, res) => {
     );
 
     res.json(result.rows[0]);
-
-  } catch (err) {
+  } catch {
     res.status(500).json({ message: "Server error" });
   }
 });
@@ -264,8 +276,7 @@ app.get("/users", auth, async (req, res) => {
     );
 
     res.json(result.rows);
-
-  } catch (err) {
+  } catch {
     res.status(500).json({ message: "Server error" });
   }
 });
@@ -275,69 +286,31 @@ app.get("/users", auth, async (req, res) => {
 ========================= */
 
 app.delete("/delete-account", auth, async (req, res) => {
-
   try {
-
-    await db.query(
-      "DELETE FROM users WHERE id=$1",
-      [req.user.id]
-    );
-
-    res.json({
-      message: "Account deleted"
-    });
-
-  } catch (err) {
-
-    console.error(err);
-
-    res.status(500).json({
-      message: "Server error"
-    });
-
-  }
-
-});
-
-/* =========================
-   SEARCH
-========================= */
-
-app.get("/search", auth, async (req, res) => {
-  try {
-    const { q } = req.query;
-
-    const result = await db.query(
-      `SELECT id,username,email,bio,avatar
-       FROM users
-       WHERE username ILIKE $1 OR email ILIKE $1`,
-      [`%${q || ""}%`]
-    );
-
-    res.json(result.rows);
-
-  } catch (err) {
+    await db.query("DELETE FROM users WHERE id=$1", [req.user.id]);
+    res.json({ message: "Account deleted" });
+  } catch {
     res.status(500).json({ message: "Server error" });
   }
 });
-//➡️ FORGOT PASSWORD ROUTE
 
+/* =========================
+   FORGOT PASSWORD (FIXED)
+========================= */
 
 app.post("/forgot-password", async (req, res) => {
   try {
     const { email } = req.body;
 
     const user = await db.query(
-      "SELECT * FROM users WHERE email=$1",
+      "SELECT id FROM users WHERE email=$1",
       [email]
     );
 
-    if (user.rows.length === 0) {
+    if (!user.rows.length)
       return res.status(404).json({ message: "User not found" });
-    }
 
     const token = crypto.randomBytes(32).toString("hex");
-
     const expiry = new Date(Date.now() + 15 * 60 * 1000);
 
     await db.query(
@@ -345,50 +318,23 @@ app.post("/forgot-password", async (req, res) => {
       [token, expiry, email]
     );
 
-    // 🔗 reset link
     const resetLink = `https://7930navid.github.io/My-platform/reset-password.html?token=${token}`;
 
-    // 📧 EMAIL SETUP
-    const transporter = nodemailer.createTransport({
-      service: "gmail",
-      auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS
-      }
-    });
-
-    const mailOptions = {
+    await transporter.sendMail({
       from: `"AsirNet Security" <${process.env.EMAIL_USER}>`,
       to: email,
-      subject: "Reset Your AsirNet Password",
-
+      subject: "Reset Password",
       html: `
-        <div style="font-family:Poppins;padding:20px">
-          <h2>Reset Your Password</h2>
-          <p>Click the button below to reset your password:</p>
-
+        <div style="font-family:Poppins">
+          <h2>Reset Password</h2>
           <a href="${resetLink}"
-             style="
-             display:inline-block;
-             padding:14px 24px;
-             background:linear-gradient(135deg,#00e5ff,#7c3aed);
-             color:white;
-             text-decoration:none;
-             border-radius:12px;
-             font-weight:bold;
-             margin-top:10px;
-             ">
-             Reset Password
+            style="padding:12px 20px;background:#00e5ff;color:white;text-decoration:none;border-radius:10px;display:inline-block;">
+            Reset Password
           </a>
-
-          <p style="margin-top:20px;color:gray;font-size:12px">
-            This link will expire in 15 minutes.
-          </p>
+          <p>This link expires in 15 minutes.</p>
         </div>
       `
-    };
-
-    await transporter.sendMail(mailOptions);
+    });
 
     res.json({ message: "Reset email sent" });
 
@@ -397,36 +343,40 @@ app.post("/forgot-password", async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 });
-//➡️ RESET PASSWORD ROUTE
+
+/* =========================
+   RESET PASSWORD (FIXED)
+========================= */
 
 app.post("/reset-password", async (req, res) => {
-  const { token, newPassword } = req.body;
+  try {
+    const { token, newPassword } = req.body;
 
-  const user = await db.query(
-    "SELECT * FROM users WHERE reset_token=$1",
-    [token]
-  );
+    const user = await db.query(
+      `SELECT * FROM users 
+       WHERE reset_token=$1 
+       AND reset_expiry > NOW()`,
+      [token]
+    );
 
-  if (user.rows.length === 0)
-    return res.status(400).json({ message: "Invalid token" });
+    if (!user.rows.length)
+      return res.status(400).json({ message: "Invalid or expired token" });
 
-  const u = user.rows[0];
+    const hash = await bcrypt.hash(newPassword, 12);
 
-  if (new Date() > new Date(u.reset_expiry))
-    return res.status(400).json({ message: "Token expired" });
+    await db.query(
+      `UPDATE users 
+       SET password=$1, reset_token=NULL, reset_expiry=NULL
+       WHERE id=$2`,
+      [hash, user.rows[0].id]
+    );
 
-  const hash = await bcrypt.hash(newPassword, 12);
+    res.json({ message: "Password updated" });
 
-  await db.query(
-    `UPDATE users 
-     SET password=$1, reset_token=NULL, reset_expiry=NULL
-     WHERE id=$2`,
-    [hash, u.id]
-  );
-
-  res.json({ message: "Password updated" });
+  } catch {
+    res.status(500).json({ message: "Server error" });
+  }
 });
-
 
 /* =========================
    START SERVER
