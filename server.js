@@ -269,6 +269,35 @@ app.get("/users", auth, async (req, res) => {
 });
 
 /* =========================
+   DELETE ACCOUNT
+========================= */
+
+app.delete("/delete-account", auth, async (req, res) => {
+
+  try {
+
+    await db.query(
+      "DELETE FROM users WHERE id=$1",
+      [req.user.id]
+    );
+
+    res.json({
+      message: "Account deleted"
+    });
+
+  } catch (err) {
+
+    console.error(err);
+
+    res.status(500).json({
+      message: "Server error"
+    });
+
+  }
+
+});
+
+/* =========================
    SEARCH
 ========================= */
 
