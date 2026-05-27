@@ -21,16 +21,22 @@ const app = express();
 
 app.disable("x-powered-by");
 
-app.use(helmet({ contentSecurityPolicy: false }));
+app.use(
+  helmet({
+    contentSecurityPolicy: false
+  })
+);
 
-app.use(cors({
-  origin: [
-    "https://7930navid.github.io",
-    "http://localhost:8080"
-  ],
-  methods: ["GET", "POST", "PUT", "DELETE"],
-  allowedHeaders: ["Content-Type", "Authorization"]
-}));
+app.use(
+  cors({
+    origin: [
+      "https://7930navid.github.io",
+      "http://localhost:8080"
+    ],
+    methods: ["GET", "POST", "PUT", "DELETE"],
+    allowedHeaders: ["Content-Type", "Authorization"]
+  })
+);
 
 app.use(express.json({ limit: "10kb" }));
 app.use(hpp());
@@ -40,29 +46,35 @@ app.use(morgan("combined"));
    RATE LIMIT
 ========================= */
 
-app.use(rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 200
-}));
+app.use(
+  rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 200
+  })
+);
 
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 5
+  max: 5,
+  message: {
+    message: "Too many login attempts"
+  }
 });
 
 /* =========================
-   DB
+   DATABASE
 ========================= */
 
 const db = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === "production"
-    ? { rejectUnauthorized: false }
-    : false
+  ssl:
+    process.env.NODE_ENV === "production"
+      ? { rejectUnauthorized: false }
+      : false
 });
 
 /* =========================
-   EMAIL
+   EMAIL TRANSPORTER
 ========================= */
 
 const transporter = nodemailer.createTransport({
@@ -74,11 +86,25 @@ const transporter = nodemailer.createTransport({
 });
 
 /* =========================
-   INIT DB
+   VERIFY MAIL SERVER
+========================= */
+
+transporter.verify((error, success) => {
+  if (error) {
+    console.log("❌ Mail error:", error);
+  } else {
+    console.log("✅ Mail server ready");
+  }
+});
+
+/* =========================
+   INIT DATABASE
 ========================= */
 
 async function initDB() {
   await db.query(`
+    CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
     CREATE TABLE IF NOT EXISTS users (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       username TEXT NOT NULL,
@@ -93,7 +119,7 @@ async function initDB() {
     );
   `);
 
-  console.log("✅ DB Ready");
+  console.log("✅ Database ready");
 }
 
 /* =========================
@@ -104,20 +130,33 @@ function auth(req, res, next) {
   try {
     const header = req.headers.authorization;
 
-    if (!header?.startsWith("Bearer ")) {
-      return res.status(401).json({ message: "Unauthorized" });
+    if (!header || !header.startsWith("Bearer ")) {
+      return res.status(401).json({
+        message: "Unauthorized"
+      });
     }
 
     const token = header.split(" ")[1];
 
-    req.user = jwt.verify(token, process.env.JWT_SECRET, {
-      issuer: "AsirNet",
-      audience: "AsirNetUsers"
-    });
+    const decoded = jwt.verify(
+      token,
+      process.env.JWT_SECRET,
+      {
+        issuer: "AsirNet",
+        audience: "AsirNetUsers"
+      }
+    );
+
+    req.user = decoded;
 
     next();
-  } catch {
-    return res.status(403).json({ message: "Invalid token" });
+
+  } catch (err) {
+    console.log(err);
+
+    return res.status(403).json({
+      message: "Invalid token"
+    });
   }
 }
 
@@ -127,66 +166,118 @@ function auth(req, res, next) {
 
 app.post("/signup", async (req, res) => {
   try {
-    const { username, email, password, bio, avatar, cover_photo } = req.body;
+    const {
+      username,
+      email,
+      password,
+      bio,
+      avatar,
+      cover_photo
+    } = req.body;
 
-    if (!username || !email || !password)
-      return res.status(400).json({ message: "Missing fields" });
+    if (!username || !email || !password) {
+      return res.status(400).json({
+        message: "Missing fields"
+      });
+    }
 
-    if (!validator.isEmail(email))
-      return res.status(400).json({ message: "Invalid email" });
+    if (!validator.isEmail(email)) {
+      return res.status(400).json({
+        message: "Invalid email"
+      });
+    }
 
-    if (password.length < 8)
-      return res.status(400).json({ message: "Weak password" });
+    if (password.length < 8) {
+      return res.status(400).json({
+        message: "Password must be at least 8 characters"
+      });
+    }
 
     const exists = await db.query(
       "SELECT id FROM users WHERE email=$1",
       [email]
     );
 
-    if (exists.rows.length)
-      return res.status(400).json({ message: "User exists" });
+    if (exists.rows.length > 0) {
+      return res.status(400).json({
+        message: "User already exists"
+      });
+    }
 
     const hash = await bcrypt.hash(password, 12);
 
     await db.query(
-      `INSERT INTO users (username,email,password,bio,avatar,cover_photo)
-       VALUES ($1,$2,$3,$4,$5,$6)`,
-      [username, email, hash, bio || "", avatar || "", cover_photo || ""]
+      `
+      INSERT INTO users
+      (username,email,password,bio,avatar,cover_photo)
+      VALUES ($1,$2,$3,$4,$5,$6)
+      `,
+      [
+        username,
+        email,
+        hash,
+        bio || "",
+        avatar || "",
+        cover_photo || ""
+      ]
     );
 
-    res.status(201).json({ message: "User created" });
+    res.status(201).json({
+      message: "User created successfully"
+    });
 
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "Server error" });
+    console.log(err);
+
+    res.status(500).json({
+      message: "Server error"
+    });
   }
 });
 
 /* =========================
-   SIGNIN (FIXED SAFE DESTRUCTURE)
+   SIGNIN
 ========================= */
 
 app.post("/signin", loginLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
 
+    if (!email || !password) {
+      return res.status(400).json({
+        message: "Missing fields"
+      });
+    }
+
     const result = await db.query(
       "SELECT * FROM users WHERE email=$1",
       [email]
     );
 
-    if (!result.rows.length)
-      return res.status(401).json({ message: "Invalid credentials" });
+    if (result.rows.length === 0) {
+      return res.status(401).json({
+        message: "Invalid credentials"
+      });
+    }
 
     const user = result.rows[0];
 
-    const match = await bcrypt.compare(password, user.password);
+    const match = await bcrypt.compare(
+      password,
+      user.password
+    );
 
-    if (!match)
-      return res.status(401).json({ message: "Invalid credentials" });
+    if (!match) {
+      return res.status(401).json({
+        message: "Invalid credentials"
+      });
+    }
 
     const token = jwt.sign(
-      { id: user.id, email: user.email },
+      {
+        id: user.id,
+        email: user.email
+      },
       process.env.JWT_SECRET,
       {
         expiresIn: "7d",
@@ -195,28 +286,172 @@ app.post("/signin", loginLimiter, async (req, res) => {
       }
     );
 
-    // ✅ FIX: no redeclare bug
-    const { password: _, reset_token, reset_expiry, ...safeUser } = user;
+    const {
+      password: hiddenPassword,
+      reset_token,
+      reset_expiry,
+      ...safeUser
+    } = user;
 
-    res.json({ token, user: safeUser });
+    res.json({
+      token,
+      user: safeUser
+    });
 
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "Server error" });
+    console.log(err);
+
+    res.status(500).json({
+      message: "Server error"
+    });
   }
 });
 
 /* =========================
-   ME
+   CURRENT USER
 ========================= */
 
 app.get("/me", auth, async (req, res) => {
-  const result = await db.query(
-    "SELECT id,username,email,bio,avatar,cover_photo FROM users WHERE id=$1",
-    [req.user.id]
-  );
+  try {
+    const result = await db.query(
+      `
+      SELECT
+      id,
+      username,
+      email,
+      bio,
+      avatar,
+      cover_photo
+      FROM users
+      WHERE id=$1
+      `,
+      [req.user.id]
+    );
 
-  res.json(result.rows[0]);
+    res.json(result.rows[0]);
+
+  } catch (err) {
+    console.log(err);
+
+    res.status(500).json({
+      message: "Server error"
+    });
+  }
+});
+
+/* =========================
+   UPDATE PROFILE
+========================= */
+
+app.put("/profile", auth, async (req, res) => {
+  try {
+    const {
+      username,
+      bio,
+      avatar,
+      cover_photo
+    } = req.body;
+
+    const result = await db.query(
+      `
+      UPDATE users
+      SET
+      username=$1,
+      bio=$2,
+      avatar=$3,
+      cover_photo=$4
+      WHERE id=$5
+      RETURNING
+      id,
+      username,
+      email,
+      bio,
+      avatar,
+      cover_photo
+      `,
+      [
+        username,
+        bio,
+        avatar,
+        cover_photo,
+        req.user.id
+      ]
+    );
+
+    res.json(result.rows[0]);
+
+  } catch (err) {
+    console.log(err);
+
+    res.status(500).json({
+      message: "Server error"
+    });
+  }
+});
+
+/* =========================
+   ALL USERS
+========================= */
+
+app.get("/users", auth, async (req, res) => {
+  try {
+    const result = await db.query(`
+      SELECT
+      id,
+      username,
+      email,
+      bio,
+      avatar,
+      cover_photo
+      FROM users
+    `);
+
+    res.json(result.rows);
+
+  } catch (err) {
+    console.log(err);
+
+    res.status(500).json({
+      message: "Server error"
+    });
+  }
+});
+
+/* =========================
+   SEARCH USERS
+========================= */
+
+app.get("/search", auth, async (req, res) => {
+  try {
+    const q = req.query.q || "";
+
+    const result = await db.query(
+      `
+      SELECT
+      id,
+      username,
+      email,
+      bio,
+      avatar,
+      cover_photo
+      FROM users
+      WHERE
+      username ILIKE $1
+      OR
+      email ILIKE $1
+      `,
+      [`%${q}%`]
+    );
+
+    res.json(result.rows);
+
+  } catch (err) {
+    console.log(err);
+
+    res.status(500).json({
+      message: "Server error"
+    });
+  }
 });
 
 /* =========================
@@ -224,8 +459,23 @@ app.get("/me", auth, async (req, res) => {
 ========================= */
 
 app.delete("/delete-account", auth, async (req, res) => {
-  await db.query("DELETE FROM users WHERE id=$1", [req.user.id]);
-  res.json({ message: "Account deleted" });
+  try {
+    await db.query(
+      "DELETE FROM users WHERE id=$1",
+      [req.user.id]
+    );
+
+    res.json({
+      message: "Account deleted"
+    });
+
+  } catch (err) {
+    console.log(err);
+
+    res.status(500).json({
+      message: "Server error"
+    });
+  }
 });
 
 /* =========================
@@ -237,7 +487,9 @@ app.post("/forgot-password", async (req, res) => {
     const { email } = req.body;
 
     if (!email) {
-      return res.status(400).json({ message: "Email required" });
+      return res.status(400).json({
+        message: "Email required"
+      });
     }
 
     const user = await db.query(
@@ -245,100 +497,175 @@ app.post("/forgot-password", async (req, res) => {
       [email]
     );
 
-    if (!user.rows.length) {
-      return res.status(404).json({ message: "User not found" });
-    }
-
-    const token = crypto.randomBytes(32).toString("hex");
-    const expiry = new Date(Date.now() + 15 * 60 * 1000);
-
-    await db.query(
-      "UPDATE users SET reset_token=$1, reset_expiry=$2 WHERE email=$3",
-      [token, expiry, email]
-    );
-
-    const resetLink = `https://7930navid.github.io/My-platform/reset-password.html?token=${token}`;
-
-    const mailOptions = {
-      from: `"AsirNet" <${process.env.EMAIL_USER}>`,
-      to: email,
-      subject: "Reset Password",
-      html: `
-        <div>
-          <h3>Reset your password</h3>
-          <a href="${resetLink}" 
-             style="padding:10px 20px;background:#00e5ff;color:#000;text-decoration:none;border-radius:8px;">
-             Click to Reset Password
-          </a>
-          <p>This link will expire in 15 minutes.</p>
-        </div>
-      `
-    };
-
-    // 🔥 IMPORTANT FIX: EMAIL TIMEOUT PROTECTION
-    try {
-      await Promise.race([
-        transporter.sendMail(mailOptions),
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("Email timeout")), 8000)
-        )
-      ]);
-    } catch (mailErr) {
-      console.error("Email send failed:", mailErr.message);
-      // still respond to user even if email fails
-      return res.json({
-        message: "Reset token created but email failed. Try again later."
+    if (user.rows.length === 0) {
+      return res.status(404).json({
+        message: "User not found"
       });
     }
 
-    return res.json({ message: "Reset email sent" });
+    const token = crypto
+      .randomBytes(32)
+      .toString("hex");
+
+    const expiry = new Date(
+      Date.now() + 15 * 60 * 1000
+    );
+
+    await db.query(
+      `
+      UPDATE users
+      SET
+      reset_token=$1,
+      reset_expiry=$2
+      WHERE email=$3
+      `,
+      [token, expiry, email]
+    );
+
+    const resetLink =
+      `https://7930navid.github.io/My-platform/reset-password.html?token=${token}`;
+
+    const mailOptions = {
+      from: `"AsirNet Security" <${process.env.EMAIL_USER}>`,
+      to: email,
+      subject: "Reset Your Password",
+
+      html: `
+      <div style="font-family:Poppins;padding:20px;">
+        <h2>Reset Your Password</h2>
+
+        <p>
+          Click the button below to reset your password.
+        </p>
+
+        <a
+          href="${resetLink}"
+          style="
+            display:inline-block;
+            padding:14px 24px;
+            background:#00e5ff;
+            color:black;
+            text-decoration:none;
+            border-radius:10px;
+            font-weight:bold;
+          "
+        >
+          Reset Password
+        </a>
+
+        <p style="margin-top:20px;">
+          This link expires in 15 minutes.
+        </p>
+      </div>
+      `
+    };
+
+    try {
+      await transporter.sendMail(mailOptions);
+
+      return res.json({
+        message: "Reset email sent"
+      });
+
+    } catch (mailError) {
+      console.log(mailError);
+
+      return res.status(500).json({
+        message: "Email failed"
+      });
+    }
 
   } catch (err) {
-    console.error("FORGOT PASSWORD ERROR:", err);
-    return res.status(500).json({ message: "Server error" });
+    console.log(err);
+
+    res.status(500).json({
+      message: "Server error"
+    });
   }
 });
+
 /* =========================
    RESET PASSWORD
 ========================= */
 
 app.post("/reset-password", async (req, res) => {
   try {
-    const { token, newPassword } = req.body;
+    const {
+      token,
+      newPassword
+    } = req.body;
+
+    if (!token || !newPassword) {
+      return res.status(400).json({
+        message: "Missing fields"
+      });
+    }
+
+    if (newPassword.length < 8) {
+      return res.status(400).json({
+        message: "Password too short"
+      });
+    }
 
     const user = await db.query(
-      `SELECT * FROM users WHERE reset_token=$1`,
+      `
+      SELECT *
+      FROM users
+      WHERE
+      reset_token=$1
+      AND
+      reset_expiry > NOW()
+      `,
       [token]
     );
 
-    if (!user.rows.length)
-      return res.status(400).json({ message: "Invalid token" });
+    if (user.rows.length === 0) {
+      return res.status(400).json({
+        message: "Invalid or expired token"
+      });
+    }
 
-    const hash = await bcrypt.hash(newPassword, 12);
-
-    await db.query(
-      `UPDATE users 
-       SET password=$1, reset_token=NULL, reset_expiry=NULL
-       WHERE id=$2`,
-      [hash, user.rows[0].id]
+    const hash = await bcrypt.hash(
+      newPassword,
+      12
     );
 
-    res.json({ message: "Password updated" });
+    await db.query(
+      `
+      UPDATE users
+      SET
+      password=$1,
+      reset_token=NULL,
+      reset_expiry=NULL
+      WHERE id=$2
+      `,
+      [
+        hash,
+        user.rows[0].id
+      ]
+    );
+
+    res.json({
+      message: "Password updated successfully"
+    });
 
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "Server error" });
+    console.log(err);
+
+    res.status(500).json({
+      message: "Server error"
+    });
   }
 });
 
 /* =========================
-   START
+   SERVER START
 ========================= */
 
 const PORT = process.env.PORT || 5000;
 
 initDB().then(() => {
   app.listen(PORT, () => {
-    console.log("🚀 Server running on", PORT);
+    console.log("🚀 AsirNet running on", PORT);
   });
 });
