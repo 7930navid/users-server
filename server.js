@@ -2,7 +2,9 @@ require("dotenv").config();
 
 const express = require("express");
 const cors = require("cors");
+const nodemailer = require("nodemailer");
 const helmet = require("helmet");
+const crypto = require("crypto");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const rateLimit = require("express-rate-limit");
@@ -318,6 +320,113 @@ app.get("/search", auth, async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 });
+//➡️ FORGOT PASSWORD ROUTE
+
+
+app.post("/forgot-password", async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    const user = await db.query(
+      "SELECT * FROM users WHERE email=$1",
+      [email]
+    );
+
+    if (user.rows.length === 0) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const token = crypto.randomBytes(32).toString("hex");
+
+    const expiry = new Date(Date.now() + 15 * 60 * 1000);
+
+    await db.query(
+      "UPDATE users SET reset_token=$1, reset_expiry=$2 WHERE email=$3",
+      [token, expiry, email]
+    );
+
+    // 🔗 reset link
+    const resetLink = `https://7930navid.github.io/My-platform/reset-password.html?token=${token}`;
+
+    // 📧 EMAIL SETUP
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS
+      }
+    });
+
+    const mailOptions = {
+      from: `"AsirNet Security" <${process.env.EMAIL_USER}>`,
+      to: email,
+      subject: "Reset Your AsirNet Password",
+
+      html: `
+        <div style="font-family:Poppins;padding:20px">
+          <h2>Reset Your Password</h2>
+          <p>Click the button below to reset your password:</p>
+
+          <a href="${resetLink}"
+             style="
+             display:inline-block;
+             padding:14px 24px;
+             background:linear-gradient(135deg,#00e5ff,#7c3aed);
+             color:white;
+             text-decoration:none;
+             border-radius:12px;
+             font-weight:bold;
+             margin-top:10px;
+             ">
+             Reset Password
+          </a>
+
+          <p style="margin-top:20px;color:gray;font-size:12px">
+            This link will expire in 15 minutes.
+          </p>
+        </div>
+      `
+    };
+
+    await transporter.sendMail(mailOptions);
+
+    res.json({ message: "Reset email sent" });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+//➡️ RESET PASSWORD ROUTE
+
+app.post("/reset-password", async (req, res) => {
+  const { token, newPassword } = req.body;
+
+  const user = await db.query(
+    "SELECT * FROM users WHERE reset_token=$1",
+    [token]
+  );
+
+  if (user.rows.length === 0)
+    return res.status(400).json({ message: "Invalid token" });
+
+  const u = user.rows[0];
+
+  if (new Date() > new Date(u.reset_expiry))
+    return res.status(400).json({ message: "Token expired" });
+
+  const hash = await bcrypt.hash(newPassword, 12);
+
+  await db.query(
+    `UPDATE users 
+     SET password=$1, reset_token=NULL, reset_expiry=NULL
+     WHERE id=$2`,
+    [hash, u.id]
+  );
+
+  res.json({ message: "Password updated" });
+});
+
 
 /* =========================
    START SERVER
