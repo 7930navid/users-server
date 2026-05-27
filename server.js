@@ -16,7 +16,7 @@ const { Pool } = require("pg");
 const app = express();
 
 /* =========================
-   BASIC SECURITY
+   SECURITY
 ========================= */
 
 app.disable("x-powered-by");
@@ -29,8 +29,7 @@ app.use(cors({
     "http://localhost:8080"
   ],
   methods: ["GET", "POST", "PUT", "DELETE"],
-  allowedHeaders: ["Content-Type", "Authorization"],
-  credentials: true
+  allowedHeaders: ["Content-Type", "Authorization"]
 }));
 
 app.use(express.json({ limit: "10kb" }));
@@ -48,8 +47,7 @@ app.use(rateLimit({
 
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 5,
-  message: { message: "Too many login attempts" }
+  max: 5
 });
 
 /* =========================
@@ -64,7 +62,7 @@ const db = new Pool({
 });
 
 /* =========================
-   EMAIL TRANSPORT (OPTIMIZED)
+   EMAIL
 ========================= */
 
 const transporter = nodemailer.createTransport({
@@ -93,11 +91,9 @@ async function initDB() {
       reset_expiry TIMESTAMP,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
-
-    CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
   `);
 
-  console.log("✅ Database Ready");
+  console.log("✅ DB Ready");
 }
 
 /* =========================
@@ -108,20 +104,18 @@ function auth(req, res, next) {
   try {
     const header = req.headers.authorization;
 
-    if (!header || !header.startsWith("Bearer ")) {
+    if (!header?.startsWith("Bearer ")) {
       return res.status(401).json({ message: "Unauthorized" });
     }
 
     const token = header.split(" ")[1];
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET, {
+    req.user = jwt.verify(token, process.env.JWT_SECRET, {
       issuer: "AsirNet",
       audience: "AsirNetUsers"
     });
 
-    req.user = decoded;
     next();
-
   } catch {
     return res.status(403).json({ message: "Invalid token" });
   }
@@ -149,7 +143,7 @@ app.post("/signup", async (req, res) => {
       [email]
     );
 
-    if (exists.rows.length > 0)
+    if (exists.rows.length)
       return res.status(400).json({ message: "User exists" });
 
     const hash = await bcrypt.hash(password, 12);
@@ -157,14 +151,7 @@ app.post("/signup", async (req, res) => {
     await db.query(
       `INSERT INTO users (username,email,password,bio,avatar,cover_photo)
        VALUES ($1,$2,$3,$4,$5,$6)`,
-      [
-        username,
-        email,
-        hash,
-        bio || "",
-        avatar || null,
-        cover_photo || null
-      ]
+      [username, email, hash, bio || "", avatar || "", cover_photo || ""]
     );
 
     res.status(201).json({ message: "User created" });
@@ -176,15 +163,12 @@ app.post("/signup", async (req, res) => {
 });
 
 /* =========================
-   SIGNIN (FIXED)
+   SIGNIN (FIXED SAFE DESTRUCTURE)
 ========================= */
 
 app.post("/signin", loginLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
-
-    if (!email || !password)
-      return res.status(400).json({ message: "Missing fields" });
 
     const result = await db.query(
       "SELECT * FROM users WHERE email=$1",
@@ -196,12 +180,7 @@ app.post("/signin", loginLimiter, async (req, res) => {
 
     const user = result.rows[0];
 
-    const match = await Promise.race([
-      bcrypt.compare(password, user.password),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("bcrypt timeout")), 5000)
-      )
-    ]);
+    const match = await bcrypt.compare(password, user.password);
 
     if (!match)
       return res.status(401).json({ message: "Invalid credentials" });
@@ -216,69 +195,28 @@ app.post("/signin", loginLimiter, async (req, res) => {
       }
     );
 
-    const { password, reset_token, reset_expiry, ...safeUser } = user;
+    // ✅ FIX: no redeclare bug
+    const { password: _, reset_token, reset_expiry, ...safeUser } = user;
 
-    return res.json({ token, user: safeUser });
+    res.json({ token, user: safeUser });
 
   } catch (err) {
-    console.error("SIGNIN ERROR:", err);
+    console.error(err);
     res.status(500).json({ message: "Server error" });
   }
 });
 
 /* =========================
-   PROFILE
+   ME
 ========================= */
 
 app.get("/me", auth, async (req, res) => {
-  try {
-    const result = await db.query(
-      "SELECT id,username,email,bio,avatar,cover_photo FROM users WHERE id=$1",
-      [req.user.id]
-    );
+  const result = await db.query(
+    "SELECT id,username,email,bio,avatar,cover_photo FROM users WHERE id=$1",
+    [req.user.id]
+  );
 
-    res.json(result.rows[0]);
-  } catch {
-    res.status(500).json({ message: "Server error" });
-  }
-});
-
-/* =========================
-   UPDATE PROFILE
-========================= */
-
-app.put("/profile", auth, async (req, res) => {
-  try {
-    const { username, bio, avatar, cover_photo } = req.body;
-
-    const result = await db.query(
-      `UPDATE users
-       SET username=$1,bio=$2,avatar=$3,cover_photo=$4
-       WHERE id=$5
-       RETURNING id,username,email,bio,avatar,cover_photo`,
-      [username, bio, avatar, cover_photo, req.user.id]
-    );
-
-    res.json(result.rows[0]);
-  } catch {
-    res.status(500).json({ message: "Server error" });
-  }
-});
-
-/* =========================
-   USERS
-========================= */
-
-app.get("/users", auth, async (req, res) => {
-  try {
-    const result = await db.query(
-      "SELECT id,username,email,bio,avatar,cover_photo FROM users"
-    );
-
-    res.json(result.rows);
-  } catch {
-    res.status(500).json({ message: "Server error" });
-  }
+  res.json(result.rows[0]);
 });
 
 /* =========================
@@ -286,16 +224,12 @@ app.get("/users", auth, async (req, res) => {
 ========================= */
 
 app.delete("/delete-account", auth, async (req, res) => {
-  try {
-    await db.query("DELETE FROM users WHERE id=$1", [req.user.id]);
-    res.json({ message: "Account deleted" });
-  } catch {
-    res.status(500).json({ message: "Server error" });
-  }
+  await db.query("DELETE FROM users WHERE id=$1", [req.user.id]);
+  res.json({ message: "Account deleted" });
 });
 
 /* =========================
-   FORGOT PASSWORD (FIXED)
+   FORGOT PASSWORD
 ========================= */
 
 app.post("/forgot-password", async (req, res) => {
@@ -321,19 +255,10 @@ app.post("/forgot-password", async (req, res) => {
     const resetLink = `https://7930navid.github.io/My-platform/reset-password.html?token=${token}`;
 
     await transporter.sendMail({
-      from: `"AsirNet Security" <${process.env.EMAIL_USER}>`,
+      from: `"AsirNet" <${process.env.EMAIL_USER}>`,
       to: email,
       subject: "Reset Password",
-      html: `
-        <div style="font-family:Poppins">
-          <h2>Reset Password</h2>
-          <a href="${resetLink}"
-            style="padding:12px 20px;background:#00e5ff;color:white;text-decoration:none;border-radius:10px;display:inline-block;">
-            Reset Password
-          </a>
-          <p>This link expires in 15 minutes.</p>
-        </div>
-      `
+      html: `<a href="${resetLink}">Reset Password</a>`
     });
 
     res.json({ message: "Reset email sent" });
@@ -345,7 +270,7 @@ app.post("/forgot-password", async (req, res) => {
 });
 
 /* =========================
-   RESET PASSWORD (FIXED)
+   RESET PASSWORD
 ========================= */
 
 app.post("/reset-password", async (req, res) => {
@@ -353,14 +278,12 @@ app.post("/reset-password", async (req, res) => {
     const { token, newPassword } = req.body;
 
     const user = await db.query(
-      `SELECT * FROM users 
-       WHERE reset_token=$1 
-       AND reset_expiry > NOW()`,
+      `SELECT * FROM users WHERE reset_token=$1`,
       [token]
     );
 
     if (!user.rows.length)
-      return res.status(400).json({ message: "Invalid or expired token" });
+      return res.status(400).json({ message: "Invalid token" });
 
     const hash = await bcrypt.hash(newPassword, 12);
 
@@ -373,19 +296,20 @@ app.post("/reset-password", async (req, res) => {
 
     res.json({ message: "Password updated" });
 
-  } catch {
+  } catch (err) {
+    console.error(err);
     res.status(500).json({ message: "Server error" });
   }
 });
 
 /* =========================
-   START SERVER
+   START
 ========================= */
 
 const PORT = process.env.PORT || 5000;
 
 initDB().then(() => {
   app.listen(PORT, () => {
-    console.log("🚀 AsirNet running on", PORT);
+    console.log("🚀 Server running on", PORT);
   });
 });
