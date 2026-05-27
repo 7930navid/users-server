@@ -236,13 +236,18 @@ app.post("/forgot-password", async (req, res) => {
   try {
     const { email } = req.body;
 
+    if (!email) {
+      return res.status(400).json({ message: "Email required" });
+    }
+
     const user = await db.query(
       "SELECT id FROM users WHERE email=$1",
       [email]
     );
 
-    if (!user.rows.length)
+    if (!user.rows.length) {
       return res.status(404).json({ message: "User not found" });
+    }
 
     const token = crypto.randomBytes(32).toString("hex");
     const expiry = new Date(Date.now() + 15 * 60 * 1000);
@@ -254,21 +259,45 @@ app.post("/forgot-password", async (req, res) => {
 
     const resetLink = `https://7930navid.github.io/My-platform/reset-password.html?token=${token}`;
 
-    await transporter.sendMail({
+    const mailOptions = {
       from: `"AsirNet" <${process.env.EMAIL_USER}>`,
       to: email,
       subject: "Reset Password",
-      html: `<a href="${resetLink}">Reset Password</a>`
-    });
+      html: `
+        <div>
+          <h3>Reset your password</h3>
+          <a href="${resetLink}" 
+             style="padding:10px 20px;background:#00e5ff;color:#000;text-decoration:none;border-radius:8px;">
+             Click to Reset Password
+          </a>
+          <p>This link will expire in 15 minutes.</p>
+        </div>
+      `
+    };
 
-    res.json({ message: "Reset email sent" });
+    // 🔥 IMPORTANT FIX: EMAIL TIMEOUT PROTECTION
+    try {
+      await Promise.race([
+        transporter.sendMail(mailOptions),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("Email timeout")), 8000)
+        )
+      ]);
+    } catch (mailErr) {
+      console.error("Email send failed:", mailErr.message);
+      // still respond to user even if email fails
+      return res.json({
+        message: "Reset token created but email failed. Try again later."
+      });
+    }
+
+    return res.json({ message: "Reset email sent" });
 
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "Server error" });
+    console.error("FORGOT PASSWORD ERROR:", err);
+    return res.status(500).json({ message: "Server error" });
   }
 });
-
 /* =========================
    RESET PASSWORD
 ========================= */
