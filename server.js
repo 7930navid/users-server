@@ -313,32 +313,34 @@ app.post("/signin", loginLimiter, async (req, res) => {
 
 app.get("/me", auth, async (req, res) => {
   try {
-    const result = await db.query(
-      `
-      SELECT
-      id,
-      username,
-      email,
-      bio,
-      avatar,
-      cover_photo
-      FROM users
-      WHERE id=$1
-      `,
-      [req.user.id]
-    );
+
+    const email = req.query.email;
+
+    let result;
+
+    if (email) {
+      result = await db.query(
+        `SELECT id, username, email, bio, avatar, cover_photo
+         FROM users
+         WHERE email=$1`,
+        [email]
+      );
+    } else {
+      result = await db.query(
+        `SELECT id, username, email, bio, avatar, cover_photo
+         FROM users
+         WHERE id=$1`,
+        [req.user.id]
+      );
+    }
 
     res.json(result.rows[0]);
 
   } catch (err) {
     console.log(err);
-
-    res.status(500).json({
-      message: "Server error"
-    });
+    res.status(500).json({ message: "Server error" });
   }
 });
-
 /* =========================
    UPDATE PROFILE
 ========================= */
