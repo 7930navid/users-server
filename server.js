@@ -660,6 +660,14 @@ app.post("/reset-password", async (req, res) => {
   }
 });
 
+/* ============ FETCH ==============*/
+app.get("/get/:name", (req,res) => {
+    const name = req.params.name;
+    const message = `${name} server has been pinged`;
+    res.send(message);
+});
+
+
 /* =========================
    SERVER START
 ========================= */
