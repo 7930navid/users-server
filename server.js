@@ -179,9 +179,12 @@ app.post("/auth/sso/nextalk", async (req, res) => {
       try {
         const token = header.split(" ")[1];
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        
+
         // Fetch fresh user data from DB
-        const dbUser = await db.query("SELECT id, username, email, bio, avatar, cover_photo FROM users WHERE id=$1 OR email=$2", [decoded.id, decoded.email]);
+        const dbUser = await db.query(
+          "SELECT id, username, email, bio, avatar, cover_photo FROM users WHERE id=$1 OR email=$2",
+          [decoded.id, decoded.email]
+        );
         if (dbUser.rows.length > 0) {
           targetUser = dbUser.rows[0];
         }
@@ -196,14 +199,15 @@ app.post("/auth/sso/nextalk", async (req, res) => {
       });
     }
 
-    // Generate signed SSO token with 10-minute expiry
+    // Generate signed SSO token with 10-minute expiry (Including ALL DB fields)
     const ssoToken = jwt.sign(
       {
         id: targetUser.id,
         email: targetUser.email,
         username: targetUser.username || targetUser.email.split("@")[0],
         avatar: targetUser.avatar || "",
-        bio: targetUser.bio || ""
+        bio: targetUser.bio || "",
+        cover_photo: targetUser.cover_photo || targetUser.coverPhoto || ""
       },
       process.env.ASIRNET_SSO_SECRET || process.env.JWT_SECRET,
       { expiresIn: "10m" }
@@ -221,6 +225,7 @@ app.post("/auth/sso/nextalk", async (req, res) => {
     });
   }
 });
+
 
 /* =========================
    SIGNUP
