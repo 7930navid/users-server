@@ -378,7 +378,7 @@ app.post("/signin", loginLimiter, async (req, res) => {
    CURRENT USER
 ========================= */
 
-app.get("/me", auth, async (req, res) => {
+app.get("/me", async (req, res) => {
   try {
 
     const email = req.query.email;
