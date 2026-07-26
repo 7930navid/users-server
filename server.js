@@ -161,6 +161,64 @@ function auth(req, res, next) {
 }
 
 /* =========================
+   SSO TOKEN GENERATOR FOR NEXTALK
+========================= */
+
+app.post("/auth/sso/nextalk", async (req, res) => {
+  try {
+    const { user } = req.body;
+    let targetUser = user;
+
+    // Check if token header was provided instead
+    const header = req.headers.authorization;
+    if (header && header.startsWith("Bearer ")) {
+      try {
+        const token = header.split(" ")[1];
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        
+        // Fetch fresh user data from DB
+        const dbUser = await db.query("SELECT id, username, email, bio, avatar, cover_photo FROM users WHERE id=$1 OR email=$2", [decoded.id, decoded.email]);
+        if (dbUser.rows.length > 0) {
+          targetUser = dbUser.rows[0];
+        }
+      } catch (tokenErr) {
+        // Fallback to provided body user if token fails
+      }
+    }
+
+    if (!targetUser || !targetUser.email) {
+      return res.status(400).json({
+        message: "User information is required for SSO"
+      });
+    }
+
+    // Generate signed SSO token with 10-minute expiry
+    const ssoToken = jwt.sign(
+      {
+        id: targetUser.id,
+        email: targetUser.email,
+        username: targetUser.username || targetUser.email.split("@")[0],
+        avatar: targetUser.avatar || "",
+        bio: targetUser.bio || ""
+      },
+      process.env.ASIRNET_SSO_SECRET || process.env.JWT_SECRET,
+      { expiresIn: "10m" }
+    );
+
+    res.json({
+      message: "SSO token generated successfully",
+      ssoToken
+    });
+
+  } catch (err) {
+    console.error("SSO Token Error:", err);
+    res.status(500).json({
+      message: "Server error during SSO generation"
+    });
+  }
+});
+
+/* =========================
    SIGNUP
 ========================= */
 
@@ -341,6 +399,7 @@ app.get("/me", auth, async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 });
+
 /* =========================
    UPDATE PROFILE
 ========================= */
@@ -666,7 +725,6 @@ app.get("/get/:name", (req,res) => {
     const message = `${name} server has been pinged`;
     res.send(message);
 });
-
 
 /* =========================
    SERVER START
