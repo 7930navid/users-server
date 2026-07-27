@@ -42,7 +42,6 @@ app.use(
     allowedHeaders: ["Content-Type", "Authorization"]
   })
 );
-app.use(express.json({ limit: "10kb" }));
 app.use(hpp());
 app.use(morgan("combined"));
 
