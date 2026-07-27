@@ -78,14 +78,19 @@ const db = new Pool({
 });
 
 /* =========================
-   EMAIL TRANSPORTER
+   EMAIL TRANSPORTER (FIXED TIMEOUT ISSUE)
 ========================= */
 const transporter = nodemailer.createTransport({
-  service: "gmail",
+  host: "smtp.gmail.com",
+  port: 465,
+  secure: true, // SSL ব্যবহার করবে
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS
-  }
+  },
+  connectionTimeout: 10000, // ১০ সেকেন্ড টাইমআউট
+  greetingTimeout: 10000,
+  socketTimeout: 10000
 });
 
 transporter.verify((error, success) => {
@@ -312,7 +317,6 @@ app.get("/me", async (req, res) => {
     let result;
 
     if (email) {
-      // ইমেইল পাঠালে সেটি দিয়ে ইউজার ফেচ করবে
       result = await db.query(
         `SELECT id, username, email, bio, avatar, cover_photo
          FROM users
@@ -320,7 +324,6 @@ app.get("/me", async (req, res) => {
         [email]
       );
     } else {
-      // ইমেইল না পাঠালে ডিফোল্টভাবে প্রথম ইউজার রিটার্ন করবে (Crash রোধ করার জন্য)
       result = await db.query(
         `SELECT id, username, email, bio, avatar, cover_photo
          FROM users
