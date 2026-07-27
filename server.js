@@ -463,7 +463,7 @@ app.put("/profile", auth, async (req, res) => {
    ALL USERS
 ========================= */
 
-app.get("/users", auth, async (req, res) => {
+app.get("/users", async (req, res) => {
   try {
     const result = await db.query(`
       SELECT
@@ -491,7 +491,7 @@ app.get("/users", auth, async (req, res) => {
    SEARCH USERS
 ========================= */
 
-app.get("/search", auth, async (req, res) => {
+app.get("/search", async (req, res) => {
   try {
     const q = req.query.q || "";
 
