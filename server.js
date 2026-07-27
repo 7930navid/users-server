@@ -35,13 +35,13 @@ app.use(
   cors({
     origin: [
       "https://7930navid.github.io",
-      "http://localhost:8080"
+      "http://localhost:8080",
+"https://nextalk-user-server.onrender.com"
     ],
     methods: ["GET", "POST", "PUT", "DELETE"],
     allowedHeaders: ["Content-Type", "Authorization"]
   })
 );
-
 app.use(express.json({ limit: "10kb" }));
 app.use(hpp());
 app.use(morgan("combined"));
