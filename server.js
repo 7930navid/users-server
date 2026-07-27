@@ -67,31 +67,34 @@ const loginLimiter = rateLimit({
 });
 
 /* =========================
-   DATABASE
+   DATABASE (FIXED)
 ========================= */
 const db = new Pool({
   connectionString: process.env.DATABASE_URL || process.env.NEXTALK_DATABASE_URL,
-  ssl:
-    process.env.NODE_ENV === "production"
-      ? { rejectUnauthorized: false }
-      : false
+  ssl: process.env.NODE_ENV === "production"
+    ? { rejectUnauthorized: false }
+    : false
 });
 
 /* =========================
-   EMAIL TRANSPORTER (FIXED TIMEOUT ISSUE)
+   EMAIL TRANSPORTER (FIXED)
 ========================= */
 const transporter = nodemailer.createTransport({
   host: "smtp.gmail.com",
-  port: 465,
-  secure: true, // SSL ব্যবহার করবে
+  port: 587,
+  secure: false, // Must be false for port 587
   auth: {
     user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS
+    pass: process.env.EMAIL_PASS // Must be an App Password, NOT your normal Gmail password
   },
-  connectionTimeout: 10000, // ১০ সেকেন্ড টাইমআউট
+  tls: {
+    rejectUnauthorized: false
+  },
+  connectionTimeout: 10000,
   greetingTimeout: 10000,
   socketTimeout: 10000
 });
+
 
 transporter.verify((error, success) => {
   if (error) {
