@@ -164,7 +164,7 @@ function auth(req, res, next) {
 }
 
 /* =========================
-   SSO TOKEN GENERATOR FOR NEXTALK
+   SSO TOKEN GENERATOR FOR NEXTALK (OPTIMIZED)
 ========================= */
 app.post("/auth/sso/nextalk", async (req, res) => {
   try {
@@ -177,8 +177,9 @@ app.post("/auth/sso/nextalk", async (req, res) => {
         const token = header.split(" ")[1];
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
+        // শুধু প্রয়োজনীয় ফিল্ডগুলো ক্যোয়ারি করা হচ্ছে
         const dbUser = await db.query(
-          "SELECT id, username, email, bio, avatar, cover_photo FROM users WHERE id=$1 OR email=$2",
+          "SELECT id, username, email FROM users WHERE id=$1 OR email=$2",
           [decoded.id, decoded.email]
         );
         if (dbUser.rows.length > 0) {
@@ -195,14 +196,12 @@ app.post("/auth/sso/nextalk", async (req, res) => {
       });
     }
 
+    // 💡 টোকেন হালকা করতে ভারী ডাটা (avatar, bio, cover_photo) বাদ দেওয়া হয়েছে
     const ssoToken = jwt.sign(
       {
         id: targetUser.id,
         email: targetUser.email,
-        username: targetUser.username || targetUser.email.split("@")[0],
-        avatar: targetUser.avatar || "",
-        bio: targetUser.bio || "",
-        cover_photo: targetUser.cover_photo || targetUser.coverPhoto || ""
+        username: targetUser.username || targetUser.email.split("@")[0]
       },
       process.env.ASIRNET_SSO_SECRET || process.env.JWT_SECRET,
       { expiresIn: "10m" }
@@ -220,6 +219,8 @@ app.post("/auth/sso/nextalk", async (req, res) => {
     });
   }
 });
+
+
 
 /* =========================
    SIGNUP
