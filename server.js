@@ -350,7 +350,7 @@ app.get("/me", async (req, res) => {
 /* =========================
    UPDATE PROFILE
 ========================= */
-app.put("/profile", auth, async (req, res) => {
+app.put("/profile", async (req, res) => {
   try {
     const { username, bio, avatar, cover_photo } = req.body;
 
@@ -414,7 +414,7 @@ app.get("/search", async (req, res) => {
 /* =========================
    DELETE ACCOUNT
 ========================= */
-app.delete("/delete-account", auth, async (req, res) => {
+app.delete("/delete-account", async (req, res) => {
   try {
     await db.query("DELETE FROM users WHERE id=$1", [req.user.id]);
     res.json({ message: "Account deleted" });
