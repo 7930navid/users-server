@@ -13,7 +13,7 @@ const morgan = require("morgan");
 const validator = require("validator");
 const { Pool } = require("pg");
 const axios = require('axios');
-const targetServers = require('./Required-Servers'); 
+const targetServers = require('./Required-Server'); 
 const app = express();
 
 /* =========================
