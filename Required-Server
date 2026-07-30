@@ -1,0 +1,8 @@
+// servers.js
+module.exports = [
+  "https://posts-server-kmha.onrender.com/changeAllProf",
+  "https://interacts-server-xpbo.onrender.com/changeAllProf",
+  "https://story-server-9d2k.onrender.com/changeAllProf",
+  "https://connection-server-9bzk.onrender.com/changeAllProf"
+  
+];
