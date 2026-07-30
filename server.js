@@ -12,7 +12,8 @@ const hpp = require("hpp");
 const morgan = require("morgan");
 const validator = require("validator");
 const { Pool } = require("pg");
-
+const axios = require('axios');
+const targetServers = require('./Required-Servers'); 
 const app = express();
 
 /* =========================
@@ -349,30 +350,54 @@ app.get("/me", async (req, res) => {
   }
 });
 
+
 /* =========================
    UPDATE PROFILE
 ========================= */
 app.put("/profile", async (req, res) => {
   try {
-    const { username, bio, avatar, cover_photo } = req.body;
+    const { email, username, bio, avatar, cover_photo } = req.body;
+    const profileData = { email, username, bio, avatar, cover_photo };
+    
+    // ১. প্রথমে সবকটি এক্সটার্নাল সার্ভারে রিকোয়েস্ট পাঠানো
+    const serverRequests = targetServers.map(serverUrl => axios.put(serverUrl, profileData));
 
+    try {
+      await Promise.all(serverRequests);
+    } catch (externalErr) {
+      console.error("One of the target servers failed to update:", externalErr.message);
+      return res.status(502).json({ 
+        message: "Update failed! One or more external servers are down, so no changes were saved to maintain data consistency." 
+      });
+    }
+
+    // ২. সব এক্সটার্নাল সার্ভার সফল হওয়ার পর নিজের ডাটাবেজে আপডেট করা
     const result = await db.query(
       `
       UPDATE users
       SET username=$1, bio=$2, avatar=$3, cover_photo=$4
-      WHERE id=$5
+      WHERE email=$5
       RETURNING id, username, email, bio, avatar, cover_photo
       `,
-      [username, bio, avatar, cover_photo, req.user.id]
+      [username, bio, avatar, cover_photo, email]
     );
 
-    res.json(result.rows[0]);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: "User not found in local database" });
+    }
+
+    res.json({
+      message: "Profile updated successfully across all servers and local database",
+      user: result.rows[0]
+    });
 
   } catch (err) {
     console.log(err);
     res.status(500).json({ message: "Server error" });
   }
 });
+
+
 
 /* =========================
    ALL USERS
